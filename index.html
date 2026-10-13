@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智曆記事本 - 待辦事項與農曆月曆管理系統</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
+</head>
+<body>
+
+  <!-- 頂部應用導航列 -->
+  <header class="app-header">
+    <div class="brand-section">
+      <span class="brand-logo">📅</span>
+      <div>
+        <div class="brand-title">
+          智曆記事本
+          <span class="brand-tag">農曆萬年曆 · 警示提醒</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 即時農曆與今日資訊 -->
+    <div class="header-info-badge" id="todayLunarBadge">
+      📅 載入今日資訊中...
+    </div>
+
+    <!-- 右側功能動作按鈕 -->
+    <div class="header-actions">
+      <button class="btn btn-primary" id="openAddModalBtn" title="新增待做事件或提醒">
+        <span>➕</span>
+        <span>新增事項</span>
+      </button>
+      <button class="btn btn-outline" id="themeToggleBtn" title="切換深色/淺色主題">
+        🌙 深色
+      </button>
+    </div>
+  </header>
+
+  <!-- 系統基準日期與功能列 (方便驗證「到期日前一天」特殊邊框警示) -->
+  <div class="system-date-bar">
+    <div class="system-date-ctrl">
+      <span>⚙️ <strong>基準/當前日期：</strong></span>
+      <input type="date" id="simDateInput" title="選擇基準日期即可即時驗證到期日前一天的特殊邊框警示效果！">
+      <button class="btn btn-outline btn-sm" id="resetSimDateBtn" title="重設為系統今天">回到真實今天</button>
+      <span style="font-size:0.75rem; color:var(--text-muted); margin-left:8px;">
+        💡 提示：系統會自動計算待辦事項到期日與基準日的差值，若剛好為<strong>前一天（明日到期）</strong>將觸發<strong>特殊邊框警示</strong>！
+      </span>
+    </div>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      <button class="btn btn-outline btn-sm" id="exportDataBtn" title="備份為 JSON 檔案">📥 匯出備份</button>
+      <label class="btn btn-outline btn-sm" style="cursor:pointer; margin:0;" title="從備份 JSON 恢復">
+        📤 匯入備份
+        <input type="file" id="importDataInput" accept=".json" style="display:none;">
+      </label>
+      <button class="btn btn-outline btn-sm" id="resetDemoBtn" title="恢復初始示範資料">🔄 重設示範</button>
+    </div>
+  </div>
+
+  <!-- 主要雙欄排版容器 -->
+  <main class="app-container">
+
+    <!-- ===================================================================
+         左側欄位：農曆月曆檢視 (Calendar View)
+         =================================================================== -->
+    <section class="panel-card calendar-panel" aria-label="月曆與農曆區域">
+      <div class="calendar-header">
+        <div class="calendar-title-group">
+          <h2 class="calendar-main-title" id="calendarMainTitle">2026 年 10 月</h2>
+          <span class="calendar-lunar-summary" id="calendarLunarSummary">【丙午 馬年 · 九月】</span>
+        </div>
+
+        <div class="calendar-nav-controls">
+          <button class="btn btn-outline btn-sm" id="calPrevBtn" title="上個月">◀</button>
+          
+          <div class="month-year-select-group">
+            <select id="calYearSelect" aria-label="選擇年份"></select>
+            <select id="calMonthSelect" aria-label="選擇月份"></select>
+          </div>
+
+          <button class="btn btn-outline btn-sm" id="calNextBtn" title="下個月">▶</button>
+          <button class="btn btn-outline btn-sm" id="calTodayBtn" style="margin-left:4px;">回到本月</button>
+        </div>
+      </div>
+
+      <!-- 星期表頭 -->
+      <div class="calendar-weekdays">
+        <div class="weekday-cell weekend">週日</div>
+        <div class="weekday-cell">週一</div>
+        <div class="weekday-cell">週二</div>
+        <div class="weekday-cell">週三</div>
+        <div class="weekday-cell">週四</div>
+        <div class="weekday-cell">週五</div>
+        <div class="weekday-cell weekend">週六</div>
+      </div>
+
+      <!-- 月曆主網格 -->
+      <div class="calendar-grid" id="calendarGrid">
+        <!-- 由 JavaScript 動態生成 7x6 網格 -->
+      </div>
+
+      <!-- 月曆圖例與特殊警示邊框說明 -->
+      <div class="calendar-legend">
+        <div class="legend-items">
+          <div class="legend-item">
+            <span class="legend-badge" style="background:#3b82f6;"></span>
+            <span>待辦事件</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-badge" style="background:#8b5cf6;"></span>
+            <span>提醒事項</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-badge legend-alert-demo"></span>
+            <strong style="color:#d97706;">⚠️ 到期日前一天特殊邊框警示</strong>
+          </div>
+          <div class="legend-item">
+            <span style="color:#dc2626; font-weight:700;">紅字標籤</span>
+            <span>傳統農曆節日 / 二十四節氣</span>
+          </div>
+        </div>
+        <div>
+          <span>點選任一日期格子即可檢視當日所有明細與快速排程</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================
+         右側欄位：記事本管理 (待做事件 vs 提醒)
+         =================================================================== -->
+    <section class="panel-card notepad-panel" aria-label="記事本事項清單">
+      
+      <!-- 頂部頁籤切換：待做事件 / 提醒 / 全部 -->
+      <div class="notepad-panel-header">
+        <div class="section-tabs" role="tablist">
+          <button class="section-tab-btn active" id="tabTodo" role="tab" aria-selected="true">
+            <span>📋 待做事件</span>
+            <span class="tab-badge" id="todoBadgeCount">0</span>
+          </button>
+          <button class="section-tab-btn" id="tabReminder" role="tab" aria-selected="false">
+            <span>🔔 提醒事項</span>
+            <span class="tab-badge" id="reminderBadgeCount">0</span>
+          </button>
+          <button class="section-tab-btn" id="tabAll" role="tab" aria-selected="false">
+            <span>🌐 全部</span>
+          </button>
+        </div>
+
+        <button class="btn btn-outline btn-sm" id="openQuickAddBtn" onclick="document.getElementById('openAddModalBtn').click();">
+          + 快速新增
+        </button>
+      </div>
+
+      <!-- 搜尋與動態過濾標籤列 -->
+      <div class="list-filter-bar">
+        <div class="search-box-wrap">
+          <span>🔍</span>
+          <input type="text" id="searchInput" placeholder="搜尋事項標題、備註關鍵字...">
+        </div>
+        <div class="filter-chips" id="filterChipsContainer">
+          <!-- 由 JavaScript 依當前 Tab 動態生成 -->
+        </div>
+      </div>
+
+      <!-- 事項卡片清單區域 -->
+      <div class="events-list-content" id="eventsListContainer">
+        <!-- 由 JavaScript 動態生成事項卡片 -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===================================================================
+       彈出視窗 1：新增 / 編輯事項 (待辦或提醒)
+       =================================================================== -->
+  <div class="modal-overlay" id="eventModal" role="dialog" aria-modal="true">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTitle">➕ 新增事項</h3>
+        <button class="modal-close-btn" id="modalCloseBtn" title="關閉">×</button>
+      </div>
+
+      <form id="eventForm">
+        <div class="modal-body">
+          
+          <!-- 事項類別切換：待做事件 vs 提醒 -->
+          <div class="form-group">
+            <label class="form-label">事項類別 <span class="required">*</span></label>
+            <div class="type-selector-group">
+              <div class="type-option-card type-todo selected" id="typeTodoCard">
+                <span class="type-icon">📋</span>
+                <div class="type-info">
+                  <h4>待做事件 (To-Do)</h4>
+                  <p>設定【到期日】，到期前一天自動觸發警示邊框</p>
+                </div>
+              </div>
+              <div class="type-option-card type-reminder" id="typeReminderCard">
+                <span class="type-icon">🔔</span>
+                <div class="type-info">
+                  <h4>提醒事項 (Reminder)</h4>
+                  <p>選擇【提醒日期】與時間，準時提醒通知</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 事項標題 -->
+          <div class="form-group">
+            <label class="form-label" for="formTitle">
+              <span>事項標題 <span class="required">*</span></span>
+            </label>
+            <input type="text" id="formTitle" class="form-input" placeholder="例如：提交期末專案結案報告、帶狗狗看獸醫..." required>
+          </div>
+
+          <!-- 日期與時間設定 (待辦為到期日，提醒為提醒日期) -->
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="formDate">
+                <span id="dateLabelText">到期日</span> <span class="required">*</span>
+              </label>
+              <input type="date" id="formDate" class="form-input" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="formTime">
+                <span>指定時間 (可選)</span>
+              </label>
+              <input type="time" id="formTime" class="form-input">
+            </div>
+          </div>
+
+          <!-- 自行選顏色 (自訂與預設色票) -->
+          <div class="form-group">
+            <label class="form-label">
+              <span>自選月曆與卡片標籤顏色 <span class="required">*</span></span>
+              <span style="font-size:0.75rem; color:var(--text-muted);">呈現於月曆與事項卡片</span>
+            </label>
+            <div class="color-picker-palette" id="colorPalette">
+              <!-- 由 JavaScript 生成預設調色盤 -->
+            </div>
+            <div class="custom-color-input-wrap" style="margin-top:6px;">
+              <span style="font-size:0.8rem; color:var(--text-muted);">或自訂色彩：</span>
+              <input type="color" id="customColorInput" value="#3b82f6" title="自訂色彩">
+            </div>
+          </div>
+
+          <!-- 詳細備註 -->
+          <div class="form-group">
+            <label class="form-label" for="formDesc">詳細內容 / 備註說明</label>
+            <textarea id="formDesc" class="form-textarea" placeholder="補充重要細節、聯絡電話、備忘清單或會議連結..."></textarea>
+          </div>
+
+          <!-- 警示提示方塊 -->
+          <div class="warning-tip-box" id="warningFeatureTip">
+            <span>💡</span>
+            <span><strong>貼心提醒：</strong>當設定為【待做事件】時，只要當前基準日到達【到期日前一天】，系統將自動在月曆膠囊與記事本卡片加上<strong>醒目的特殊警示邊框</strong>！</span>
+          </div>
+
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" style="color:#ef4444; border-color:#fca5a5; display:none;" id="deleteEventBtn">
+            🗑️ 刪除此項
+          </button>
+          <button type="button" class="btn btn-outline" id="modalCancelBtn">取消</button>
+          <button type="submit" class="btn btn-primary" id="submitEventBtn">確定儲存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       彈出視窗 2：單日行程詳細檢視 (Day View Modal)
+       =================================================================== -->
+  <div class="modal-overlay" id="dayViewModal" role="dialog" aria-modal="true">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="dayViewTitle">📅 單日事項一覽</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-top:2px;" id="dayViewLunar">農曆：---</p>
+        </div>
+        <button class="modal-close-btn" id="dayViewCloseBtn" title="關閉">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="dayViewEventsList" style="display:flex; flex-direction:column; gap:0.75rem;">
+          <!-- 動態載入當日所有事件 -->
+        </div>
+      </div>
+
+      <div class="modal-footer" style="justify-content:space-between;">
+        <div style="display:flex; gap:0.5rem;">
+          <button type="button" class="btn btn-todo btn-sm" id="dayViewAddTodoBtn">+ 在此日新增待辦</button>
+          <button type="button" class="btn btn-reminder btn-sm" id="dayViewAddReminderBtn">+ 在此日新增提醒</button>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('dayViewCloseBtn').click();">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 浮動提示 Toast -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- 載入腳本 (農曆模組先載入，再載入主應用程式) -->
+  <script src="lunar.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
