@@ -2,6 +2,9 @@
 
 一套具備**農曆萬年曆**、**待做事件管理**、**提醒事項設定**與**到期日前一天特殊邊框警示**的現代化繁體中文網頁應用程式。
 
+* 🌐 **線上體驗 (GitHub Pages)**: [https://bingchiwang.github.io/smart-notepad-calendar/](https://bingchiwang.github.io/smart-notepad-calendar/)
+* 📦 **GitHub 儲存庫**: [https://github.com/bingchiwang/smart-notepad-calendar](https://github.com/bingchiwang/smart-notepad-calendar)
+
 ---
 
 ## 🌟 主要功能特點
