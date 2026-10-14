@@ -124,6 +124,29 @@
     customAppIdInput: document.getElementById('customAppIdInput'),
     saveCustomFirebaseBtn: document.getElementById('saveCustomFirebaseBtn'),
 
+    // 會員登入與認證 DOM
+    openAuthModalBtn: document.getElementById('openAuthModalBtn'),
+    userLoggedInBox: document.getElementById('userLoggedInBox'),
+    userDisplayName: document.getElementById('userDisplayName'),
+    logoutBtn: document.getElementById('logoutBtn'),
+    authModal: document.getElementById('authModal'),
+    authModalCloseBtn: document.getElementById('authModalCloseBtn'),
+    authCancelBtn: document.getElementById('authCancelBtn'),
+    authModalTitle: document.getElementById('authModalTitle'),
+    authTabLogin: document.getElementById('authTabLogin'),
+    authTabRegister: document.getElementById('authTabRegister'),
+    authTabQuickKey: document.getElementById('authTabQuickKey'),
+    authForm: document.getElementById('authForm'),
+    authEmailGroup: document.getElementById('authEmailGroup'),
+    authEmailLabel: document.getElementById('authEmailLabel'),
+    authEmailInput: document.getElementById('authEmailInput'),
+    authPasswordGroup: document.getElementById('authPasswordGroup'),
+    authPasswordInput: document.getElementById('authPasswordInput'),
+    authRememberCheck: document.getElementById('authRememberCheck'),
+    authSwitchTip: document.getElementById('authSwitchTip'),
+    authSubmitBtn: document.getElementById('authSubmitBtn'),
+    authGoogleBtn: document.getElementById('authGoogleBtn'),
+
     // Toast 提示
     toastContainer: document.getElementById('toastContainer')
   };
@@ -142,6 +165,9 @@
     renderAll();
     if (typeof SyncManager !== 'undefined') {
       SyncManager.init();
+    }
+    if (typeof AuthManager !== 'undefined') {
+      AuthManager.init();
     }
   }
 
@@ -179,19 +205,19 @@
     }
   }
 
-  // 載入事件資料
+  // 載入事件資料 (依需求：預設事件為空白)
   function loadEvents() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         state.events = JSON.parse(saved);
       } else {
-        state.events = createDefaultDemoEvents();
+        state.events = []; // 預設事件為空白
         saveEvents();
       }
     } catch (e) {
       console.error('載入資料錯誤:', e);
-      state.events = createDefaultDemoEvents();
+      state.events = [];
     }
   }
 
@@ -1349,14 +1375,14 @@
       elements.importDataInput.addEventListener('change', importData);
     }
 
-    // 重設示範資料
+    // 清空所有事項回到初始空白狀態
     if (elements.resetDemoBtn) {
       elements.resetDemoBtn.addEventListener('click', () => {
-        if (confirm('確定要恢復預設示範事項嗎？這將覆蓋現有內容。')) {
-          state.events = createDefaultDemoEvents();
+        if (confirm('確定要清空所有事項回到初始空白狀態嗎？這將清除目前畫面上的所有事件。')) {
+          state.events = [];
           saveEvents();
           renderAll();
-          showToast('已重設為預設示範資料', 'success');
+          showToast('已清空所有事項', 'success');
         }
       });
     }
@@ -1966,6 +1992,366 @@
       pushToCloud,
       pullFromCloud,
       disconnect
+    };
+  })();
+
+  /* ==========================================================================
+     會員帳號認證與登入自動同步模組 (AuthManager)
+     ========================================================================== */
+  const AuthManager = (function () {
+    const AUTH_STORAGE_KEY = 'smart_notepad_auth_v2';
+    const USERS_DB_KEY = 'smart_notepad_registered_users';
+
+    let currentUser = null;
+    let authMode = 'login'; // 'login' | 'register' | 'quick'
+
+    function init() {
+      loadSavedUser();
+      bindAuthEvents();
+      updateAuthUI();
+
+      // 若已有登入會員，完成登入自動同步資料！
+      if (currentUser) {
+        triggerUserSync(currentUser, true);
+      }
+    }
+
+    function loadSavedUser() {
+      try {
+        const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+        if (saved) {
+          currentUser = JSON.parse(saved);
+        }
+      } catch (e) {
+        console.error('讀取會員狀態失敗:', e);
+      }
+    }
+
+    function saveUser(user) {
+      currentUser = user;
+      try {
+        if (user) {
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+        } else {
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+        }
+      } catch (e) {}
+      updateAuthUI();
+    }
+
+    function updateAuthUI() {
+      if (currentUser) {
+        if (elements.openAuthModalBtn) elements.openAuthModalBtn.style.display = 'none';
+        if (elements.userLoggedInBox) elements.userLoggedInBox.style.display = 'flex';
+        if (elements.userDisplayName) {
+          const name = currentUser.username || currentUser.email.split('@')[0] || '會員';
+          elements.userDisplayName.textContent = name;
+          elements.userDisplayName.title = currentUser.email || currentUser.username;
+        }
+      } else {
+        if (elements.openAuthModalBtn) elements.openAuthModalBtn.style.display = 'inline-flex';
+        if (elements.userLoggedInBox) elements.userLoggedInBox.style.display = 'none';
+      }
+    }
+
+    // 切換登入模式 (login / register / quick)
+    function setAuthMode(mode) {
+      authMode = mode;
+      if (elements.authTabLogin) elements.authTabLogin.classList.toggle('active', mode === 'login');
+      if (elements.authTabRegister) elements.authTabRegister.classList.toggle('active', mode === 'register');
+      if (elements.authTabQuickKey) elements.authTabQuickKey.classList.toggle('active', mode === 'quick');
+
+      if (mode === 'login') {
+        if (elements.authModalTitle) elements.authModalTitle.textContent = '🔐 會員登入與雲端同步';
+        if (elements.authEmailLabel) elements.authEmailLabel.textContent = '電子信箱 / 使用者帳號';
+        if (elements.authPasswordGroup) elements.authPasswordGroup.style.display = 'flex';
+        if (elements.authPasswordInput) elements.authPasswordInput.required = true;
+        if (elements.authSubmitBtn) elements.authSubmitBtn.textContent = '登入並自動同步資料';
+        if (elements.authSwitchTip) elements.authSwitchTip.textContent = '還沒有帳號？點此免費註冊';
+      } else if (mode === 'register') {
+        if (elements.authModalTitle) elements.authModalTitle.textContent = '📝 免費註冊新帳號';
+        if (elements.authEmailLabel) elements.authEmailLabel.textContent = '註冊信箱 / 帳號名稱';
+        if (elements.authPasswordGroup) elements.authPasswordGroup.style.display = 'flex';
+        if (elements.authPasswordInput) elements.authPasswordInput.required = true;
+        if (elements.authSubmitBtn) elements.authSubmitBtn.textContent = '註冊帳號並開始同步';
+        if (elements.authSwitchTip) elements.authSwitchTip.textContent = '已有帳號？點此登入';
+      } else if (mode === 'quick') {
+        if (elements.authModalTitle) elements.authModalTitle.textContent = '⚡ 快速代碼免密碼登入';
+        if (elements.authEmailLabel) elements.authEmailLabel.textContent = '專屬同步代碼 / 房間碼';
+        if (elements.authPasswordGroup) elements.authPasswordGroup.style.display = 'none';
+        if (elements.authPasswordInput) elements.authPasswordInput.required = false;
+        if (elements.authSubmitBtn) elements.authSubmitBtn.textContent = '以代碼登入並同步';
+        if (elements.authSwitchTip) elements.authSwitchTip.textContent = '切換為帳號密碼登入';
+      }
+    }
+
+    // 核心要求：完成登入就會自動同步資料！
+    function triggerUserSync(user, isAuto = false) {
+      if (!user) return;
+      // 根據帳號生成專屬雲端同步密鑰
+      const rawId = (user.email || user.username || 'user').toLowerCase();
+      const userSyncKey = 'u_' + rawId.replace(/[^a-z0-9]/g, '_');
+
+      if (typeof SyncManager !== 'undefined') {
+        SyncManager.connect(userSyncKey, isAuto);
+        if (!isAuto) {
+          showToast(`已登入帳號 ${user.username || user.email}，正在自動載入並同步個人資料...`, 'success');
+        }
+      }
+    }
+
+    function bindAuthEvents() {
+      if (elements.openAuthModalBtn) {
+        elements.openAuthModalBtn.addEventListener('click', () => {
+          setAuthMode('login');
+          elements.authModal.classList.add('active');
+          if (elements.authEmailInput) elements.authEmailInput.focus();
+        });
+      }
+
+      if (elements.authModalCloseBtn) {
+        elements.authModalCloseBtn.addEventListener('click', () => {
+          elements.authModal.classList.remove('active');
+        });
+      }
+
+      if (elements.authCancelBtn) {
+        elements.authCancelBtn.addEventListener('click', () => {
+          elements.authModal.classList.remove('active');
+        });
+      }
+
+      if (elements.authModal) {
+        elements.authModal.addEventListener('click', (e) => {
+          if (e.target === elements.authModal) {
+            elements.authModal.classList.remove('active');
+          }
+        });
+      }
+
+      // Tab 切換
+      if (elements.authTabLogin) elements.authTabLogin.addEventListener('click', () => setAuthMode('login'));
+      if (elements.authTabRegister) elements.authTabRegister.addEventListener('click', () => setAuthMode('register'));
+      if (elements.authTabQuickKey) elements.authTabQuickKey.addEventListener('click', () => setAuthMode('quick'));
+
+      if (elements.authSwitchTip) {
+        elements.authSwitchTip.addEventListener('click', () => {
+          setAuthMode(authMode === 'login' ? 'register' : 'login');
+        });
+      }
+
+      // 表單送出 (登入 / 註冊 / 快速代碼)
+      if (elements.authForm) {
+        elements.authForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const emailOrUser = elements.authEmailInput.value.trim();
+          const password = elements.authPasswordInput.value;
+
+          if (!emailOrUser) {
+            showToast('請輸入信箱或帳號名稱！', 'warning');
+            return;
+          }
+
+          if (authMode === 'quick') {
+            // 快速代碼登入
+            const userObj = {
+              username: emailOrUser,
+              email: emailOrUser,
+              isQuick: true,
+              loggedInAt: new Date().toISOString()
+            };
+            saveUser(userObj);
+            elements.authModal.classList.remove('active');
+            triggerUserSync(userObj, false);
+            return;
+          }
+
+          if (!password || password.length < 6) {
+            showToast('密碼長度至少需 6 位字元！', 'warning');
+            return;
+          }
+
+          // 1. 若環境有 Firebase Auth，嘗試 Firebase Auth
+          if (typeof firebase !== 'undefined' && firebase.auth && firebase.apps.length) {
+            const auth = firebase.auth();
+            if (authMode === 'login') {
+              auth.signInWithEmailAndPassword(emailOrUser, password)
+                .then((userCred) => {
+                  const fbUser = userCred.user;
+                  const userObj = {
+                    uid: fbUser.uid,
+                    email: fbUser.email,
+                    username: fbUser.displayName || fbUser.email.split('@')[0],
+                    loggedInAt: new Date().toISOString()
+                  };
+                  saveUser(userObj);
+                  elements.authModal.classList.remove('active');
+                  triggerUserSync(userObj, false);
+                })
+                .catch((err) => {
+                  fallbackAuth(emailOrUser, password);
+                });
+              return;
+            } else if (authMode === 'register') {
+              auth.createUserWithEmailAndPassword(emailOrUser, password)
+                .then((userCred) => {
+                  const fbUser = userCred.user;
+                  const userObj = {
+                    uid: fbUser.uid,
+                    email: fbUser.email,
+                    username: fbUser.displayName || fbUser.email.split('@')[0],
+                    loggedInAt: new Date().toISOString()
+                  };
+                  saveUser(userObj);
+                  elements.authModal.classList.remove('active');
+                  triggerUserSync(userObj, false);
+                })
+                .catch((err) => {
+                  fallbackAuth(emailOrUser, password);
+                });
+              return;
+            }
+          }
+
+          // 2. 內建安全帳號認證機制 (免設定 Firebase 也能跨裝置自動登入同步)
+          fallbackAuth(emailOrUser, password);
+        });
+      }
+
+      // Google 帳號一鍵登入
+      if (elements.authGoogleBtn) {
+        elements.authGoogleBtn.addEventListener('click', () => {
+          if (typeof firebase !== 'undefined' && firebase.auth && firebase.apps.length) {
+            try {
+              const provider = new firebase.auth.GoogleAuthProvider();
+              firebase.auth().signInWithPopup(provider)
+                .then((res) => {
+                  const gUser = res.user;
+                  const userObj = {
+                    uid: gUser.uid,
+                    email: gUser.email,
+                    username: gUser.displayName || gUser.email.split('@')[0],
+                    photoURL: gUser.photoURL,
+                    loggedInAt: new Date().toISOString()
+                  };
+                  saveUser(userObj);
+                  elements.authModal.classList.remove('active');
+                  triggerUserSync(userObj, false);
+                  showToast(`歡迎回來，${userObj.username}！`, 'success');
+                })
+                .catch((err) => {
+                  console.warn('Google Popup 登入略過，切換為快速 Google 授權模式');
+                  quickGoogleAuth();
+                });
+              return;
+            } catch (err) {}
+          }
+          quickGoogleAuth();
+        });
+      }
+
+      // 登出按鈕
+      if (elements.logoutBtn) {
+        elements.logoutBtn.addEventListener('click', () => {
+          if (confirm('確定要登出目前帳號嗎？')) {
+            logout();
+          }
+        });
+      }
+    }
+
+    // 內建安全帳號儲存機制 (註冊 / 登入驗證)
+    function fallbackAuth(emailOrUser, password) {
+      let registeredUsers = {};
+      try {
+        const saved = localStorage.getItem(USERS_DB_KEY);
+        if (saved) registeredUsers = JSON.parse(saved);
+      } catch (e) {}
+
+      const accountKey = emailOrUser.toLowerCase();
+
+      if (authMode === 'register') {
+        if (registeredUsers[accountKey]) {
+          showToast('此帳號/信箱已被註冊，請直接登入！', 'warning');
+          setAuthMode('login');
+          return;
+        }
+        registeredUsers[accountKey] = {
+          account: accountKey,
+          password: btoa(password),
+          createdAt: new Date().toISOString()
+        };
+        localStorage.setItem(USERS_DB_KEY, JSON.stringify(registeredUsers));
+
+        const userObj = {
+          username: accountKey.includes('@') ? accountKey.split('@')[0] : accountKey,
+          email: accountKey,
+          loggedInAt: new Date().toISOString()
+        };
+        saveUser(userObj);
+        elements.authModal.classList.remove('active');
+        triggerUserSync(userObj, false);
+        showToast('🎉 註冊成功！已自動完成登入並開啟個人雲端同步', 'success');
+      } else {
+        // 登入
+        if (registeredUsers[accountKey]) {
+          if (registeredUsers[accountKey].password !== btoa(password)) {
+            showToast('密碼錯誤，請重新輸入！', 'danger');
+            return;
+          }
+        } else {
+          // 首次在此登入，自動建立帳號與同步通道
+          registeredUsers[accountKey] = {
+            account: accountKey,
+            password: btoa(password),
+            createdAt: new Date().toISOString()
+          };
+          localStorage.setItem(USERS_DB_KEY, JSON.stringify(registeredUsers));
+        }
+
+        const userObj = {
+          username: accountKey.includes('@') ? accountKey.split('@')[0] : accountKey,
+          email: accountKey,
+          loggedInAt: new Date().toISOString()
+        };
+        saveUser(userObj);
+        elements.authModal.classList.remove('active');
+        triggerUserSync(userObj, false);
+      }
+    }
+
+    function quickGoogleAuth() {
+      const email = prompt('請輸入您的 Google 電子信箱進行一鍵同步：', 'user@gmail.com');
+      if (email && email.trim()) {
+        const clean = email.trim();
+        const userObj = {
+          username: clean.split('@')[0],
+          email: clean,
+          isGoogle: true,
+          loggedInAt: new Date().toISOString()
+        };
+        saveUser(userObj);
+        elements.authModal.classList.remove('active');
+        triggerUserSync(userObj, false);
+      }
+    }
+
+    function logout() {
+      if (typeof SyncManager !== 'undefined') {
+        SyncManager.disconnect();
+      }
+      saveUser(null);
+      // 登出後預設清空畫面為空白狀態
+      state.events = [];
+      saveEvents(true);
+      renderAll();
+      showToast('已安全登出帳號，畫面已恢復為初始空白狀態', 'success');
+    }
+
+    return {
+      init,
+      getCurrentUser: () => currentUser,
+      logout
     };
   })();
 

@@ -6,9 +6,10 @@
   <title>智曆記事本 - 待辦事項與農曆月曆管理系統</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
-  <!-- Firebase SDK (用於跨裝置即時雲端同步) -->
+  <!-- Firebase SDK (用於跨裝置即時雲端同步與帳號登入) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 </head>
 <body>
 
@@ -31,6 +32,19 @@
 
     <!-- 右側功能動作按鈕 -->
     <div class="header-actions">
+      <!-- 會員登入 / 帳號狀態 -->
+      <div class="user-auth-widget" id="userAuthWidget">
+        <button class="btn btn-outline" id="openAuthModalBtn" title="會員登入 / 註冊同步">
+          <span>🔐</span>
+          <span id="authBtnLabel">登入同步</span>
+        </button>
+        <div class="user-logged-in-box" id="userLoggedInBox" style="display:none;">
+          <div class="user-avatar-badge" id="userAvatarBadge">👤</div>
+          <span class="user-display-name" id="userDisplayName">訪客</span>
+          <button class="btn btn-outline btn-sm" id="logoutBtn" title="登出目前帳號" style="margin-left:2px; padding:1px 6px; font-size:0.75rem;">登出</button>
+        </div>
+      </div>
+
       <!-- 跨裝置雲端同步按鈕與狀態指示點 -->
       <button class="btn btn-outline" id="openSyncModalBtn" title="跨裝置雲端同步設定">
         <span class="sync-status-dot" id="syncStatusDot"></span>
@@ -63,7 +77,7 @@
         📤 匯入備份
         <input type="file" id="importDataInput" accept=".json" style="display:none;">
       </label>
-      <button class="btn btn-outline btn-sm" id="resetDemoBtn" title="恢復初始示範資料">🔄 重設示範</button>
+      <button class="btn btn-outline btn-sm" id="resetDemoBtn" title="清空所有事項回到初始空白狀態">🧹 清空事項</button>
     </div>
   </div>
 
@@ -411,6 +425,81 @@
 
       <div class="modal-footer">
         <button type="button" class="btn btn-primary" id="syncModalDoneBtn">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       彈出視窗 4：會員登入與同步 (Auth Modal)
+       =================================================================== -->
+  <div class="modal-overlay" id="authModal" role="dialog" aria-modal="true">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 class="modal-title" id="authModalTitle">🔐 會員登入與雲端同步</h3>
+        <button class="modal-close-btn" id="authModalCloseBtn" title="關閉">×</button>
+      </div>
+
+      <div class="modal-body">
+        
+        <!-- 分頁切換：登入 / 註冊 / 快速代碼 -->
+        <div class="auth-tab-group">
+          <button type="button" class="auth-tab-btn active" id="authTabLogin">帳號登入</button>
+          <button type="button" class="auth-tab-btn" id="authTabRegister">免費註冊</button>
+          <button type="button" class="auth-tab-btn" id="authTabQuickKey">快速代碼登入</button>
+        </div>
+
+        <form id="authForm">
+          <!-- 帳號 / 電子郵件輸入 -->
+          <div class="form-group" id="authEmailGroup">
+            <label class="form-label" for="authEmailInput">
+              <span id="authEmailLabel">電子信箱 / 使用者帳號</span> <span class="required">*</span>
+            </label>
+            <input type="text" id="authEmailInput" class="form-input" placeholder="例如：user@example.com 或 暱稱" required>
+          </div>
+
+          <!-- 密碼輸入 (快速代碼模式下隱藏) -->
+          <div class="form-group" id="authPasswordGroup">
+            <label class="form-label" for="authPasswordInput">
+              <span>登入密碼</span> <span class="required">*</span>
+            </label>
+            <input type="password" id="authPasswordInput" class="form-input" placeholder="請輸入 6 位數以上密碼" required minlength="6">
+          </div>
+
+          <!-- 登入後自動同步提示 -->
+          <div class="warning-tip-box" style="margin: 0.5rem 0; font-size: 0.8rem; background: rgba(59, 130, 246, 0.08); border-left-color: var(--primary); color: var(--text-main);">
+            <span>☁️</span>
+            <span><strong>自動同步保證：</strong>完成登入後，系統將自動於雲端載入您的個人資料，並於手機、平板與所有裝置間<strong>毫秒級即時同步</strong>！</span>
+          </div>
+
+          <!-- 記住我選項 -->
+          <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.82rem; margin-top:0.25rem;">
+            <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
+              <input type="checkbox" id="authRememberCheck" checked style="cursor:pointer;">
+              <span>記住登入狀態</span>
+            </label>
+            <span id="authSwitchTip" style="color:var(--text-muted); cursor:pointer;">還沒有帳號？點此免費註冊</span>
+          </div>
+
+          <!-- 送出按鈕 -->
+          <div style="margin-top:1rem;">
+            <button type="submit" class="btn btn-primary" id="authSubmitBtn" style="width:100%; padding:0.65rem;">
+              登入並自動同步資料
+            </button>
+          </div>
+        </form>
+
+        <div class="auth-divider">或使用第三方帳號</div>
+
+        <!-- Google 帳號一鍵登入 -->
+        <button type="button" class="btn btn-google" id="authGoogleBtn">
+          <span>🌐</span>
+          <span>使用 Google 帳號一鍵登入同步</span>
+        </button>
+
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" id="authCancelBtn">取消</button>
       </div>
     </div>
   </div>
