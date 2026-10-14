@@ -6,6 +6,9 @@
   <title>智曆記事本 - 待辦事項與農曆月曆管理系統</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
+  <!-- Firebase SDK (用於跨裝置即時雲端同步) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -28,6 +31,12 @@
 
     <!-- 右側功能動作按鈕 -->
     <div class="header-actions">
+      <!-- 跨裝置雲端同步按鈕與狀態指示點 -->
+      <button class="btn btn-outline" id="openSyncModalBtn" title="跨裝置雲端同步設定">
+        <span class="sync-status-dot" id="syncStatusDot"></span>
+        <span id="syncBtnText">☁️ 雲端同步</span>
+      </button>
+
       <button class="btn btn-primary" id="openAddModalBtn" title="新增待做事件或提醒">
         <span>➕</span>
         <span>新增事項</span>
@@ -294,6 +303,114 @@
           <button type="button" class="btn btn-reminder btn-sm" id="dayViewAddReminderBtn">+ 在此日新增提醒</button>
         </div>
         <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('dayViewCloseBtn').click();">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       彈出視窗 3：跨裝置雲端同步設定 (Cloud Sync Modal)
+       =================================================================== -->
+  <div class="modal-overlay" id="syncModal" role="dialog" aria-modal="true">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 class="modal-title">☁️ 跨裝置雲端即時同步</h3>
+        <button class="modal-close-btn" id="syncModalCloseBtn" title="關閉">×</button>
+      </div>
+
+      <div class="modal-body">
+        
+        <!-- 連線狀態卡片 -->
+        <div class="sync-status-card">
+          <div class="sync-status-header">
+            <div class="sync-status-indicator">
+              <span class="sync-status-dot" id="modalSyncDot"></span>
+              <span id="modalSyncStatusText">⚪ 本地離線模式 (尚未連線)</span>
+            </div>
+            <span class="sync-time-text" id="syncLastTimeText">尚未同步</span>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin:0;">
+            支援手機、平板與電腦跨裝置無縫同步。只要在各裝置設定<strong>同一個同步代碼</strong>，待辦與提醒將即時自動更新！
+          </p>
+        </div>
+
+        <!-- 同步帳號 / 代碼輸入區 -->
+        <div class="form-group">
+          <label class="form-label" for="syncKeyInput">
+            <span>同步帳號 / 密鑰代碼 (Sync Key) <span class="required">*</span></span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">英數自訂或隨機</span>
+          </label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="syncKeyInput" class="form-input" style="flex:1;" placeholder="例如：my-notepad-2026 或任意代號">
+            <button type="button" class="btn btn-outline btn-sm" id="randomSyncKeyBtn" title="隨機產生一組高強度同步碼">🎲 隨機產生</button>
+            <button type="button" class="btn btn-primary btn-sm" id="connectSyncBtn">連線同步</button>
+          </div>
+        </div>
+
+        <!-- 即時自動同步選項 -->
+        <div style="display:flex; align-items:center; gap:0.5rem; padding:0.25rem 0;">
+          <input type="checkbox" id="autoSyncCheckbox" checked style="width:16px; height:16px; cursor:pointer;">
+          <label for="autoSyncCheckbox" style="font-size:0.85rem; font-weight:600; cursor:pointer;">
+            啟用自動即時同步（本地新增、勾選或修改時自動同步至雲端）
+          </label>
+        </div>
+
+        <!-- 手機配對與 QR Code 專區 -->
+        <div class="form-group" style="border-top:1px dashed var(--border-color); padding-top:0.85rem;">
+          <label class="form-label">
+            <span>📱 手機 / 另一裝置快速配對</span>
+          </label>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" id="showQrBtn">📱 顯示手機同步 QR Code</button>
+            <button type="button" class="btn btn-outline btn-sm" id="copySyncLinkBtn">📋 複製同步連結</button>
+          </div>
+
+          <!-- QR Code 展開顯示容器 -->
+          <div class="qr-code-box" id="qrCodeContainer" style="display:none;">
+            <div id="qrCodeImageWrapper">
+              <!-- 動態生成 QR Code 圖片 -->
+            </div>
+            <div class="qr-code-tip">
+              使用手機相機掃描上方 QR Code，即可在手機瀏覽器直接開啟並<strong>自動完成配對同步</strong>！
+            </div>
+          </div>
+        </div>
+
+        <!-- 手動雙向覆蓋操作 -->
+        <div class="form-group" style="border-top:1px dashed var(--border-color); padding-top:0.85rem;">
+          <label class="form-label"><span>🔄 手動同步控制</span></label>
+          <div class="sync-action-row">
+            <button type="button" class="btn btn-outline btn-sm" id="manualPushBtn" title="將本地現有資料完整上傳覆蓋雲端">
+              ⬆️ 立即上傳至雲端
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" id="manualPullBtn" title="立即從雲端下載最新資料並覆蓋本地">
+              ⬇️ 立即從雲端下載
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" style="color:#ef4444;" id="disconnectSyncBtn">
+              🔌 斷開連線
+            </button>
+          </div>
+        </div>
+
+        <!-- 進階：自訂個人 Firebase 設定 (可摺疊) -->
+        <details style="border-top:1px solid var(--border-color); padding-top:0.75rem; font-size:0.82rem; color:var(--text-muted);">
+          <summary style="cursor:pointer; font-weight:600; color:var(--text-main);">
+            ⚙️ 進階選項：使用個人專屬 Firebase 專案（選填）
+          </summary>
+          <div style="display:flex; flex-direction:column; gap:0.6rem; margin-top:0.75rem;">
+            <p>
+              預設使用開箱即用的即時雲端同步。若您想完全由個人 Firebase 掌控，可填入您的 Firebase Web 專案設定：
+            </p>
+            <input type="text" id="customApiKeyInput" class="form-input" placeholder="apiKey (例如：AIzaSy...)">
+            <input type="text" id="customProjectIdInput" class="form-input" placeholder="projectId (例如：my-notepad-proj)">
+            <input type="text" id="customAppIdInput" class="form-input" placeholder="appId (例如：1:123456:web:abcdef)">
+            <button type="button" class="btn btn-outline btn-sm" id="saveCustomFirebaseBtn">儲存個人 Firebase 設定</button>
+          </div>
+        </details>
+
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="syncModalDoneBtn">完成</button>
       </div>
     </div>
   </div>

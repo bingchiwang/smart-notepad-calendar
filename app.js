@@ -98,6 +98,32 @@
     dayViewAddTodoBtn: document.getElementById('dayViewAddTodoBtn'),
     dayViewAddReminderBtn: document.getElementById('dayViewAddReminderBtn'),
     
+    // 跨裝置雲端同步 DOM
+    openSyncModalBtn: document.getElementById('openSyncModalBtn'),
+    syncStatusDot: document.getElementById('syncStatusDot'),
+    syncBtnText: document.getElementById('syncBtnText'),
+    syncModal: document.getElementById('syncModal'),
+    syncModalCloseBtn: document.getElementById('syncModalCloseBtn'),
+    syncModalDoneBtn: document.getElementById('syncModalDoneBtn'),
+    modalSyncDot: document.getElementById('modalSyncDot'),
+    modalSyncStatusText: document.getElementById('modalSyncStatusText'),
+    syncLastTimeText: document.getElementById('syncLastTimeText'),
+    syncKeyInput: document.getElementById('syncKeyInput'),
+    randomSyncKeyBtn: document.getElementById('randomSyncKeyBtn'),
+    connectSyncBtn: document.getElementById('connectSyncBtn'),
+    disconnectSyncBtn: document.getElementById('disconnectSyncBtn'),
+    autoSyncCheckbox: document.getElementById('autoSyncCheckbox'),
+    showQrBtn: document.getElementById('showQrBtn'),
+    copySyncLinkBtn: document.getElementById('copySyncLinkBtn'),
+    qrCodeContainer: document.getElementById('qrCodeContainer'),
+    qrCodeImageWrapper: document.getElementById('qrCodeImageWrapper'),
+    manualPushBtn: document.getElementById('manualPushBtn'),
+    manualPullBtn: document.getElementById('manualPullBtn'),
+    customApiKeyInput: document.getElementById('customApiKeyInput'),
+    customProjectIdInput: document.getElementById('customProjectIdInput'),
+    customAppIdInput: document.getElementById('customAppIdInput'),
+    saveCustomFirebaseBtn: document.getElementById('saveCustomFirebaseBtn'),
+
     // Toast 提示
     toastContainer: document.getElementById('toastContainer')
   };
@@ -114,6 +140,9 @@
     initColorPalette();
     bindEvents();
     renderAll();
+    if (typeof SyncManager !== 'undefined') {
+      SyncManager.init();
+    }
   }
 
   // 初始化主題
@@ -166,9 +195,12 @@
     }
   }
 
-  function saveEvents() {
+  function saveEvents(skipSync = false) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.events));
+      if (!skipSync && typeof SyncManager !== 'undefined') {
+        SyncManager.onLocalChange();
+      }
     } catch (e) {
       console.error('儲存資料失敗:', e);
     }
@@ -1395,6 +1427,547 @@
       setTimeout(() => toast.remove(), 350);
     }, 2800);
   }
+
+  /* ==========================================================================
+     跨裝置即時雲端同步模組 (SyncManager)
+     ========================================================================== */
+  const SyncManager = (function () {
+    const SYNC_CONFIG_KEY = 'smart_notepad_sync_v2';
+    const DEVICE_ID_KEY = 'smart_notepad_device_id';
+
+    let config = {
+      syncKey: '',
+      autoSync: true,
+      lastSyncTime: '',
+      customFirebase: null // { apiKey, projectId, appId }
+    };
+
+    let isConnected = false;
+    let sseSource = null;
+    let firestoreUnsubscribe = null;
+    let isRemoteUpdating = false;
+    let debounceTimer = null;
+
+    // 取得或產生此裝置的唯一識別碼 (避免自我廣播回圈)
+    function getDeviceId() {
+      let devId = sessionStorage.getItem(DEVICE_ID_KEY);
+      if (!devId) {
+        devId = 'dev-' + Math.random().toString(36).substr(2, 9);
+        sessionStorage.setItem(DEVICE_ID_KEY, devId);
+      }
+      return devId;
+    }
+
+    function init() {
+      loadConfig();
+      checkUrlParams();
+      bindSyncEvents();
+      renderSyncUI();
+
+      if (config.syncKey) {
+        connect(config.syncKey, true);
+      }
+    }
+
+    function loadConfig() {
+      try {
+        const saved = localStorage.getItem(SYNC_CONFIG_KEY);
+        if (saved) {
+          config = { ...config, ...JSON.parse(saved) };
+        }
+      } catch (e) {
+        console.error('載入同步設定失敗:', e);
+      }
+    }
+
+    function saveConfig() {
+      try {
+        localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(config));
+      } catch (e) {
+        console.error('儲存同步設定失敗:', e);
+      }
+    }
+
+    // 檢查網址列是否有 ?sync=xxxx 自動配對代碼
+    function checkUrlParams() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const urlSyncKey = params.get('sync');
+        if (urlSyncKey && urlSyncKey.trim()) {
+          const cleanKey = urlSyncKey.trim();
+          config.syncKey = cleanKey;
+          saveConfig();
+          setTimeout(() => {
+            showToast(`已透過網址連結自動載入同步代碼：${cleanKey}`, 'success');
+          }, 600);
+        }
+      } catch (e) {}
+    }
+
+    // 渲染同步設定介面狀態
+    function renderSyncUI() {
+      if (elements.syncKeyInput) elements.syncKeyInput.value = config.syncKey || '';
+      if (elements.autoSyncCheckbox) elements.autoSyncCheckbox.checked = config.autoSync !== false;
+      if (elements.syncLastTimeText) {
+        elements.syncLastTimeText.textContent = config.lastSyncTime ? `最後同步：${config.lastSyncTime}` : '尚未同步';
+      }
+
+      if (config.customFirebase && elements.customApiKeyInput) {
+        elements.customApiKeyInput.value = config.customFirebase.apiKey || '';
+        elements.customProjectIdInput.value = config.customFirebase.projectId || '';
+        elements.customAppIdInput.value = config.customFirebase.appId || '';
+      }
+
+      updateStatusUI(isConnected, isConnected ? `🟢 雲端已即時同步中 (${config.syncKey})` : '⚪ 本地離線模式 (尚未連線)');
+    }
+
+    // 更新狀態指示燈與文字
+    function updateStatusUI(connected, text, stateType = '') {
+      isConnected = connected;
+
+      const dotClass = stateType === 'syncing' ? 'sync-status-dot syncing' : (connected ? 'sync-status-dot connected' : 'sync-status-dot');
+      
+      if (elements.syncStatusDot) elements.syncStatusDot.className = dotClass;
+      if (elements.modalSyncDot) elements.modalSyncDot.className = dotClass;
+
+      if (elements.syncBtnText) {
+        elements.syncBtnText.textContent = stateType === 'syncing' ? '☁️ 同步中' : (connected ? '☁️ 已同步' : '☁️ 雲端同步');
+      }
+
+      if (elements.modalSyncStatusText) {
+        elements.modalSyncStatusText.textContent = text;
+      }
+    }
+
+    // 綁定同步面板互動事件
+    function bindSyncEvents() {
+      if (elements.openSyncModalBtn) {
+        elements.openSyncModalBtn.addEventListener('click', () => {
+          renderSyncUI();
+          elements.syncModal.classList.add('active');
+        });
+      }
+
+      if (elements.syncModalCloseBtn) {
+        elements.syncModalCloseBtn.addEventListener('click', () => {
+          elements.syncModal.classList.remove('active');
+        });
+      }
+
+      if (elements.syncModalDoneBtn) {
+        elements.syncModalDoneBtn.addEventListener('click', () => {
+          elements.syncModal.classList.remove('active');
+        });
+      }
+
+      if (elements.syncModal) {
+        elements.syncModal.addEventListener('click', (e) => {
+          if (e.target === elements.syncModal) {
+            elements.syncModal.classList.remove('active');
+          }
+        });
+      }
+
+      // 隨機產生同步代碼
+      if (elements.randomSyncKeyBtn) {
+        elements.randomSyncKeyBtn.addEventListener('click', () => {
+          const randKey = 'note-' + Math.random().toString(36).substr(2, 6);
+          elements.syncKeyInput.value = randKey;
+          showToast(`已隨機產生代碼：${randKey}`, 'success');
+        });
+      }
+
+      // 連線同步按鈕
+      if (elements.connectSyncBtn) {
+        elements.connectSyncBtn.addEventListener('click', () => {
+          const key = elements.syncKeyInput.value.trim();
+          if (!key) {
+            showToast('請輸入同步帳號 / 密鑰代碼！', 'warning');
+            elements.syncKeyInput.focus();
+            return;
+          }
+          config.syncKey = key;
+          saveConfig();
+          connect(key, false);
+        });
+      }
+
+      // 斷開連線按鈕
+      if (elements.disconnectSyncBtn) {
+        elements.disconnectSyncBtn.addEventListener('click', disconnect);
+      }
+
+      // 自動同步開關
+      if (elements.autoSyncCheckbox) {
+        elements.autoSyncCheckbox.addEventListener('change', (e) => {
+          config.autoSync = e.target.checked;
+          saveConfig();
+          showToast(config.autoSync ? '已開啟自動即時同步' : '已關閉自動同步，改為手動同步', 'success');
+        });
+      }
+
+      // 顯示手機 QR Code 按鈕
+      if (elements.showQrBtn) {
+        elements.showQrBtn.addEventListener('click', toggleQrCode);
+      }
+
+      // 複製同步連結按鈕
+      if (elements.copySyncLinkBtn) {
+        elements.copySyncLinkBtn.addEventListener('click', copySyncLink);
+      }
+
+      // 手動立即上傳
+      if (elements.manualPushBtn) {
+        elements.manualPushBtn.addEventListener('click', () => {
+          if (!config.syncKey) {
+            showToast('請先連線同步代碼！', 'warning');
+            return;
+          }
+          pushToCloud(true);
+        });
+      }
+
+      // 手動立即下載
+      if (elements.manualPullBtn) {
+        elements.manualPullBtn.addEventListener('click', () => {
+          if (!config.syncKey) {
+            showToast('請先連線同步代碼！', 'warning');
+            return;
+          }
+          pullFromCloud(true);
+        });
+      }
+
+      // 儲存個人 Firebase 設定
+      if (elements.saveCustomFirebaseBtn) {
+        elements.saveCustomFirebaseBtn.addEventListener('click', () => {
+          const apiKey = elements.customApiKeyInput ? elements.customApiKeyInput.value.trim() : '';
+          const projectId = elements.customProjectIdInput ? elements.customProjectIdInput.value.trim() : '';
+          const appId = elements.customAppIdInput ? elements.customAppIdInput.value.trim() : '';
+
+          if (apiKey && projectId) {
+            config.customFirebase = { apiKey, projectId, appId };
+            saveConfig();
+            showToast('已儲存個人 Firebase 專案設定！正在重新連線...', 'success');
+            if (config.syncKey) connect(config.syncKey, false);
+          } else {
+            config.customFirebase = null;
+            saveConfig();
+            showToast('已清除個人 Firebase 設定，切換回開箱即用即時同步通道', 'success');
+            if (config.syncKey) connect(config.syncKey, false);
+          }
+        });
+      }
+    }
+
+    // 建立連線 (Firebase Firestore 或 即時 PubSub 雙向通道)
+    function connect(key, isSilent = false) {
+      if (!key) return;
+      cleanUpListeners();
+
+      const safeKey = encodeURIComponent(key.toLowerCase());
+      updateStatusUI(true, '🟡 正在連線同步雲端...', 'syncing');
+
+      // 1. 若設定了個人 Firebase 專案，使用 Firebase Firestore 即時監聽
+      if (config.customFirebase && config.customFirebase.apiKey && config.customFirebase.projectId && typeof firebase !== 'undefined') {
+        try {
+          let app = firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(config.customFirebase);
+          const db = firebase.firestore(app);
+
+          firestoreUnsubscribe = db.collection('smart_notepads').doc(safeKey).onSnapshot((doc) => {
+            if (doc.exists) {
+              const data = doc.data();
+              if (data && Array.isArray(data.events)) {
+                if (data.senderId === getDeviceId()) return;
+                isRemoteUpdating = true;
+                state.events = data.events;
+                saveEvents(true);
+                renderAll();
+                const nowTime = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+                config.lastSyncTime = nowTime;
+                saveConfig();
+                if (elements.syncLastTimeText) elements.syncLastTimeText.textContent = `最後同步：${nowTime}`;
+                updateStatusUI(true, `🟢 雲端已即時同步 (Firebase: ${key})`);
+                showToast('已自 Firebase 同步最新事項！', 'success');
+                setTimeout(() => { isRemoteUpdating = false; }, 800);
+              }
+            } else {
+              // 遠端尚無文件，推送本地現有資料至 Firebase
+              pushToCloud(false);
+            }
+          }, (err) => {
+            console.warn('Firebase 監聽錯誤:', err);
+            setupRealtimeChannel(safeKey, key, isSilent);
+          });
+
+          updateStatusUI(true, `🟢 雲端已即時同步 (Firebase: ${key})`);
+          if (!isSilent) showToast(`已成功連線至 Firebase 雲端：${key}`, 'success');
+          return;
+        } catch (e) {
+          console.warn('Firebase 初始化失敗，自動切換至即時雲端通道:', e);
+        }
+      }
+
+      // 2. 開箱即用即時雙向通道 (毫秒級 SSE 監聽 + 雲端同步)
+      setupRealtimeChannel(safeKey, key, isSilent);
+    }
+
+    // 設置即時雙向通道
+    function setupRealtimeChannel(safeKey, key, isSilent) {
+      try {
+        const topic = `smart_np_sync_${safeKey}`;
+        const sseUrl = `https://ntfy.sh/${topic}/sse`;
+
+        sseSource = new EventSource(sseUrl);
+
+        sseSource.onopen = function () {
+          updateStatusUI(true, `🟢 雲端已即時同步 (${key})`);
+          if (!isSilent) showToast(`已成功連線至雲端同步：${key}`, 'success');
+          // 連線成功時，先主動拉取一次雲端快照
+          pullFromCloud(false);
+        };
+
+        sseSource.onmessage = function (e) {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.event === 'message' && data.message) {
+              const payload = JSON.parse(data.message);
+              if (payload && Array.isArray(payload.events)) {
+                if (payload.senderId === getDeviceId()) return; // 略過本裝置自身發出的廣播
+                isRemoteUpdating = true;
+                state.events = payload.events;
+                saveEvents(true);
+                renderAll();
+                const nowTime = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+                config.lastSyncTime = nowTime;
+                saveConfig();
+                if (elements.syncLastTimeText) elements.syncLastTimeText.textContent = `最後同步：${nowTime}`;
+                updateStatusUI(true, `🟢 雲端已即時同步 (${key})`);
+                showToast('已自其他裝置即時同步最新事項！', 'success');
+                setTimeout(() => { isRemoteUpdating = false; }, 800);
+              }
+            }
+          } catch (err) {}
+        };
+
+        sseSource.onerror = function () {
+          // 網路暫時波動，自動由瀏覽器重試重連
+        };
+
+      } catch (err) {
+        console.error('即時通道啟動錯誤:', err);
+        updateStatusUI(false, '連線發生錯誤');
+      }
+    }
+
+    function cleanUpListeners() {
+      if (sseSource) {
+        sseSource.close();
+        sseSource = null;
+      }
+      if (firestoreUnsubscribe) {
+        firestoreUnsubscribe();
+        firestoreUnsubscribe = null;
+      }
+    }
+
+    // 本地資料產生異動時 (新增、修改、刪除、勾選完成)
+    function onLocalChange() {
+      if (isRemoteUpdating || !config.syncKey || config.autoSync === false) return;
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        pushToCloud(false);
+      }, 400);
+    }
+
+    // 推送本地資料至雲端
+    function pushToCloud(isManual = false) {
+      if (!config.syncKey) return;
+      const safeKey = encodeURIComponent(config.syncKey.toLowerCase());
+      updateStatusUI(true, '🟡 正在上傳至雲端...', 'syncing');
+
+      const payload = {
+        senderId: getDeviceId(),
+        timestamp: Date.now(),
+        events: state.events
+      };
+
+      const jsonStr = JSON.stringify(payload);
+
+      // 1. 若啟用 Firebase，寫入 Firestore
+      if (config.customFirebase && typeof firebase !== 'undefined' && firebase.apps.length) {
+        try {
+          const db = firebase.firestore();
+          db.collection('smart_notepads').doc(safeKey).set({
+            senderId: getDeviceId(),
+            updatedAt: Date.now(),
+            events: state.events
+          });
+        } catch (e) {}
+      }
+
+      // 2. 廣播至即時雙向通道
+      const topic = `smart_np_sync_${safeKey}`;
+      fetch(`https://ntfy.sh/${topic}`, {
+        method: 'POST',
+        body: jsonStr,
+        headers: { 'Title': 'Notepad-Sync' }
+      }).then(() => {
+        const nowTime = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+        config.lastSyncTime = nowTime;
+        saveConfig();
+        if (elements.syncLastTimeText) elements.syncLastTimeText.textContent = `最後同步：${nowTime}`;
+        updateStatusUI(true, `🟢 雲端已即時同步 (${config.syncKey})`);
+        if (isManual) showToast('已成功上傳最新事項覆蓋雲端！', 'success');
+      }).catch(err => {
+        console.warn('同步上傳暫時異常:', err);
+        updateStatusUI(true, `🟢 雲端已就緒 (${config.syncKey})`);
+      });
+    }
+
+    // 從雲端下載最新資料
+    function pullFromCloud(isManual = false) {
+      if (!config.syncKey) return;
+      const safeKey = encodeURIComponent(config.syncKey.toLowerCase());
+      updateStatusUI(true, '🟡 正在從雲端抓取...', 'syncing');
+
+      // 1. 若有 Firebase 則從 Firestore 抓取
+      if (config.customFirebase && typeof firebase !== 'undefined' && firebase.apps.length) {
+        try {
+          const db = firebase.firestore();
+          db.collection('smart_notepads').doc(safeKey).get().then(doc => {
+            if (doc.exists) {
+              const data = doc.data();
+              if (data && Array.isArray(data.events)) {
+                state.events = data.events;
+                saveEvents(true);
+                renderAll();
+                const nowTime = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+                config.lastSyncTime = nowTime;
+                saveConfig();
+                if (elements.syncLastTimeText) elements.syncLastTimeText.textContent = `最後同步：${nowTime}`;
+                updateStatusUI(true, `🟢 雲端已即時同步 (Firebase: ${config.syncKey})`);
+                if (isManual) showToast('成功從 Firebase 下載最新事項！', 'success');
+                return;
+              }
+            }
+          });
+        } catch (e) {}
+      }
+
+      // 2. 從即時通道最近一筆快照中讀取
+      const topic = `smart_np_sync_${safeKey}`;
+      fetch(`https://ntfy.sh/${topic}/json?poll=1`)
+        .then(res => res.text())
+        .then(text => {
+          if (!text) return;
+          const lines = text.trim().split('\n');
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const msg = JSON.parse(lines[i]);
+              if (msg.event === 'message' && msg.message) {
+                const payload = JSON.parse(msg.message);
+                if (payload && Array.isArray(payload.events)) {
+                  state.events = payload.events;
+                  saveEvents(true);
+                  renderAll();
+                  const nowTime = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+                  config.lastSyncTime = nowTime;
+                  saveConfig();
+                  if (elements.syncLastTimeText) elements.syncLastTimeText.textContent = `最後同步：${nowTime}`;
+                  updateStatusUI(true, `🟢 雲端已即時同步 (${config.syncKey})`);
+                  if (isManual) showToast('已成功從雲端下載最新事項！', 'success');
+                  return;
+                }
+              }
+            } catch (e) {}
+          }
+          updateStatusUI(true, `🟢 雲端已即時同步 (${config.syncKey})`);
+        })
+        .catch(() => {
+          updateStatusUI(true, `🟢 雲端已就緒 (${config.syncKey})`);
+        });
+    }
+
+    // 斷開雲端連線
+    function disconnect() {
+      cleanUpListeners();
+      config.syncKey = '';
+      saveConfig();
+      if (elements.syncKeyInput) elements.syncKeyInput.value = '';
+      updateStatusUI(false, '⚪ 本地離線模式 (已斷開連線)');
+      showToast('已斷開雲端同步，目前為本地單機模式', 'warning');
+    }
+
+    // 取得手機配對完整連結
+    function getSyncUrl() {
+      const key = config.syncKey || (elements.syncKeyInput ? elements.syncKeyInput.value.trim() : '');
+      if (!key) return '';
+
+      let base = window.location.href.split('?')[0];
+      // 若為 file:// 協定本機開啟，提示使用區域網路 IP
+      if (window.location.protocol === 'file:') {
+        base = 'http://172.16.194.210:8080/';
+      }
+      return `${base}?sync=${encodeURIComponent(key)}`;
+    }
+
+    // 切換顯示手機配對 QR Code
+    function toggleQrCode() {
+      if (!elements.qrCodeContainer) return;
+      const key = config.syncKey || (elements.syncKeyInput ? elements.syncKeyInput.value.trim() : '');
+      if (!key) {
+        showToast('請先輸入或設定同步代碼！', 'warning');
+        return;
+      }
+
+      const isHidden = elements.qrCodeContainer.style.display === 'none';
+      if (isHidden) {
+        const syncUrl = getSyncUrl();
+        const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(syncUrl)}`;
+        
+        elements.qrCodeImageWrapper.innerHTML = `
+          <div style="text-align:center;">
+            <img src="${qrApiUrl}" alt="手機同步 QR Code" style="box-shadow:var(--shadow-sm); margin-bottom:8px;">
+            <div style="font-size:0.75rem; color:var(--text-muted); word-break:break-all;">
+              同步連結：<span class="code-badge">${escapeHtml(syncUrl)}</span>
+            </div>
+          </div>
+        `;
+        elements.qrCodeContainer.style.display = 'flex';
+        showToast('已產生配對 QR Code，請用手機相機掃描', 'success');
+      } else {
+        elements.qrCodeContainer.style.display = 'none';
+      }
+    }
+
+    // 複製同步連結到剪貼簿
+    function copySyncLink() {
+      const syncUrl = getSyncUrl();
+      if (!syncUrl) {
+        showToast('請先輸入或設定同步代碼！', 'warning');
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(syncUrl).then(() => {
+          showToast('已成功複製手機同步連結至剪貼簿！', 'success');
+        }).catch(() => {
+          prompt('請複製以下同步連結：', syncUrl);
+        });
+      } else {
+        prompt('請複製以下同步連結：', syncUrl);
+      }
+    }
+
+    return {
+      init,
+      onLocalChange,
+      connect,
+      pushToCloud,
+      pullFromCloud,
+      disconnect
+    };
+  })();
 
   // 當 DOM 載入完成即執行
   if (document.readyState === 'loading') {
